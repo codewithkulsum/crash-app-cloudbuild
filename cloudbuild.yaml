@@ -31,14 +31,14 @@ steps:
     waitFor: ['build-image']
 
   # Step 4: deploy to Cloud Run
-  - name: 'gcr.io/google.com/cloudsdk/cloud-sdk'
+  - name: 'gcr.io/cloud-builders/gcloud'
     id: deploy
     entrypoint: gcloud
     args: ['run', 'deploy', 'crash-demo', '--image=us-central1-docker.pkg.dev/$PROJECT_ID/crash-repo/crash-demo', '--region=us-central1', '--allow-unauthenticated']
     waitFor: ['push-image']
 
   # Step 5: smoke test the live service (plain curl, no AI needed here)
-  - name: 'gcr.io/google.com/cloudsdk/cloud-sdk'
+  - name: 'gcr.io/cloud-builders/gcloud'
     id: smoke-test
     entrypoint: bash
     args:
