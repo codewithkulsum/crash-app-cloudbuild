@@ -48,7 +48,19 @@ steps:
         curl -sf -o /dev/null -w "%{http_code}" "$$URL" | grep -q 200 && echo "Service healthy" || (echo "Service check failed" && exit 1)
     waitFor: ['deploy']
 
-  # Step 6: check post-deploy logs for anomalies using Gemini
+  # Step 6a: fetch recent logs using gcloud (this image has gcloud, not node)
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: fetch-logs
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        sleep 30
+        gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="crash-demo" AND severity>=WARNING' --limit=50 --format='value(textPayload)' --freshness=10m > /workspace/logs.txt
+        echo "Log lines fetched: $$(wc -l < /workspace/logs.txt)"
+    waitFor: ['smoke-test']
+
+  # Step 6b: summarize logs using Gemini (this image has node, not gcloud)
   - name: node:20
     id: check-logs
     entrypoint: bash
@@ -60,11 +72,9 @@ steps:
       - -c
       - |
         npm install -g @google/gemini-cli
-        sleep 30
-        gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="crash-demo" AND severity>=WARNING' --limit=50 --format='value(textPayload)' --freshness=10m > logs.txt
-        if [ ! -s logs.txt ]; then echo "No warnings or errors."; exit 0; fi
-        cat logs.txt | gemini -p "Summarize anomaly patterns in these Cloud Run logs in 3 short bullets."
-    waitFor: ['smoke-test']
+        if [ ! -s /workspace/logs.txt ]; then echo "No warnings or errors."; exit 0; fi
+        cat /workspace/logs.txt | gemini -p "Summarize anomaly patterns in these Cloud Run logs in 3 short bullets."
+    waitFor: ['fetch-logs']
 
 images:
   - 'us-central1-docker.pkg.dev/$PROJECT_ID/crash-repo/crash-demo'
