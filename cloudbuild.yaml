@@ -9,6 +9,7 @@ steps:
     args:
       - -c
       - |
+        apt-get update -qq && apt-get install -y -qq git
         pip install --quiet google-genai
         git fetch origin main || true
         DIFF=$$(git diff origin/main...HEAD -- Dockerfile cloudbuild.yaml 2>/dev/null || echo "")
@@ -68,7 +69,7 @@ steps:
         curl -sf -o /dev/null -w "%{http_code}" "$$URL" | grep -q 200 && echo "Service healthy" || (echo "Service check failed" && exit 1)
     waitFor: ['deploy']
 
-  # Step 6a: fetch recent logs using gcloud
+  # Step 6a: fetch recent logs using gcloud, widened window to 30 minutes
   - name: 'gcr.io/cloud-builders/gcloud'
     id: fetch-logs
     entrypoint: bash
@@ -76,7 +77,7 @@ steps:
       - -c
       - |
         sleep 30
-        gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="crash-demo" AND severity>=WARNING' --limit=50 --format='value(textPayload)' --freshness=10m > /workspace/logs.txt
+        gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="crash-demo" AND severity>=WARNING' --limit=50 --format='value(textPayload)' --freshness=30m > /workspace/logs.txt
         echo "Log lines fetched: $$(wc -l < /workspace/logs.txt)"
     waitFor: ['smoke-test']
 
