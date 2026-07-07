@@ -15,7 +15,7 @@ steps:
         git fetch origin main || true
         DIFF=$$(git diff origin/main...HEAD -- Dockerfile cloudbuild.yaml 2>/dev/null || echo "")
         if [ -z "$$DIFF" ]; then echo "No infra changes to review."; exit 0; fi
-        echo "$$DIFF" | gemini -p "Review this Dockerfile/cloudbuild.yaml diff for DevOps concerns: containers running as root, missing resource limits, hardcoded secrets, overly broad IAM roles. Start reply with SEVERITY: NONE/LOW/MEDIUM/HIGH/CRITICAL" > review.txt
+        echo "$$DIFF" | gemini --model gemini-2.5-flash -p "Review this Dockerfile/cloudbuild.yaml diff for DevOps concerns: containers running as root, missing resource limits, hardcoded secrets, overly broad IAM roles. Start reply with SEVERITY: NONE/LOW/MEDIUM/HIGH/CRITICAL" > review.txt
         cat review.txt
         grep -q "SEVERITY: CRITICAL" review.txt && exit 1 || exit 0
 
@@ -38,7 +38,7 @@ steps:
     args: ['run', 'deploy', 'crash-demo', '--image=us-central1-docker.pkg.dev/$PROJECT_ID/crash-repo/crash-demo', '--region=us-central1', '--allow-unauthenticated']
     waitFor: ['push-image']
 
-  # Step 5: smoke test the live service (plain curl, no AI needed here)
+  # Step 5: smoke test the live service
   - name: 'gcr.io/cloud-builders/gcloud'
     id: smoke-test
     entrypoint: bash
@@ -49,7 +49,7 @@ steps:
         curl -sf -o /dev/null -w "%{http_code}" "$$URL" | grep -q 200 && echo "Service healthy" || (echo "Service check failed" && exit 1)
     waitFor: ['deploy']
 
-  # Step 6a: fetch recent logs using gcloud (this image has gcloud, not node)
+  # Step 6a: fetch recent logs using gcloud
   - name: 'gcr.io/cloud-builders/gcloud'
     id: fetch-logs
     entrypoint: bash
@@ -61,7 +61,7 @@ steps:
         echo "Log lines fetched: $$(wc -l < /workspace/logs.txt)"
     waitFor: ['smoke-test']
 
-  # Step 6b: summarize logs using Gemini (this image has node, not gcloud)
+  # Step 6b: summarize logs using Gemini
   - name: node:20
     id: check-logs
     entrypoint: bash
@@ -75,7 +75,7 @@ steps:
       - |
         npm install -g @google/gemini-cli
         if [ ! -s /workspace/logs.txt ]; then echo "No warnings or errors."; exit 0; fi
-        cat /workspace/logs.txt | gemini -p "Summarize anomaly patterns in these Cloud Run logs in 3 short bullets."
+        cat /workspace/logs.txt | gemini --model gemini-2.5-flash -p "Summarize anomaly patterns in these Cloud Run logs in 3 short bullets."
     waitFor: ['fetch-logs']
 
 images:
