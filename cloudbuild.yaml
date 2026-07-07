@@ -1,0 +1,67 @@
+steps:
+  # Step 1: DevOps review of Dockerfile and pipeline config (not app code)
+  - name: node:20
+    id: pipeline-review
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        npm install -g @google/gemini-cli
+        git fetch origin main || true
+        DIFF=$(git diff origin/main...HEAD -- Dockerfile cloudbuild.yaml 2>/dev/null || echo "")
+        if [ -z "$DIFF" ]; then echo "No infra changes to review."; exit 0; fi
+        echo "$DIFF" | gemini -p "Review this Dockerfile/cloudbuild.yaml diff for DevOps concerns: containers running as root, missing resource limits, hardcoded secrets, overly broad IAM roles. Start reply with SEVERITY: NONE/LOW/MEDIUM/HIGH/CRITICAL" > review.txt
+        cat review.txt
+        grep -q "SEVERITY: CRITICAL" review.txt && exit 1 || exit 0
+
+  # Step 2: build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: build-image
+    args: ['build', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/crash-repo/crash-demo', '.']
+    waitFor: ['pipeline-review']
+
+  # Step 3: push the image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    id: push-image
+    args: ['push', 'us-central1-docker.pkg.dev/$PROJECT_ID/crash-repo/crash-demo']
+    waitFor: ['build-image']
+
+  # Step 4: deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdk/cloud-sdk'
+    id: deploy
+    entrypoint: gcloud
+    args: ['run', 'deploy', 'crash-demo', '--image=us-central1-docker.pkg.dev/$PROJECT_ID/crash-repo/crash-demo', '--region=us-central1', '--allow-unauthenticated']
+    waitFor: ['push-image']
+
+  # Step 5: smoke test the live service (plain curl, no AI needed here)
+  - name: 'gcr.io/google.com/cloudsdk/cloud-sdk'
+    id: smoke-test
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        URL=$(gcloud run services describe crash-demo --region=us-central1 --format='value(status.url)')
+        curl -sf -o /dev/null -w "%{http_code}" "$URL" | grep -q 200 && echo "Service healthy" || (echo "Service check failed" && exit 1)
+    waitFor: ['deploy']
+
+  # Step 6: check post-deploy logs for anomalies using Gemini
+  - name: node:20
+    id: check-logs
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        npm install -g @google/gemini-cli
+        sleep 30
+        gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="crash-demo" AND severity>=WARNING' --limit=50 --format='value(textPayload)' --freshness=10m > logs.txt
+        if [ ! -s logs.txt ]; then echo "No warnings or errors."; exit 0; fi
+        cat logs.txt | gemini -p "Summarize anomaly patterns in these Cloud Run logs in 3 short bullets."
+    waitFor: ['smoke-test']
+
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/crash-repo/crash-demo'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1200s
