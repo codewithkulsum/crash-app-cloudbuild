@@ -1,22 +1,41 @@
 steps:
   # Step 1: DevOps review of Dockerfile and pipeline config (not app code)
-  - name: node:20
+  - name: python:3.12-slim
     id: pipeline-review
     entrypoint: bash
     env:
-      - 'GOOGLE_GENAI_USE_VERTEXAI=true'
       - 'GOOGLE_CLOUD_PROJECT=iam-ci-demo-477311'
       - 'GOOGLE_CLOUD_LOCATION=us-central1'
-      - 'GEMINI_CLI_TRUST_WORKSPACE=true'
     args:
       - -c
       - |
-        npm install -g @google/gemini-cli
+        pip install --quiet google-genai
         git fetch origin main || true
         DIFF=$$(git diff origin/main...HEAD -- Dockerfile cloudbuild.yaml 2>/dev/null || echo "")
         if [ -z "$$DIFF" ]; then echo "No infra changes to review."; exit 0; fi
-        echo "$$DIFF" | gemini --model gemini-2.5-flash -p "Review this Dockerfile/cloudbuild.yaml diff for DevOps concerns: containers running as root, missing resource limits, hardcoded secrets, overly broad IAM roles. Start reply with SEVERITY: NONE/LOW/MEDIUM/HIGH/CRITICAL" > review.txt
-        cat review.txt
+        cat > review.py << 'PYEOF'
+        import os
+        from google import genai
+
+        diff = os.environ["DIFF_CONTENT"]
+        client = genai.Client(
+            vertexai=True,
+            project=os.environ["GOOGLE_CLOUD_PROJECT"],
+            location=os.environ["GOOGLE_CLOUD_LOCATION"],
+        )
+        prompt = f"""Review this Dockerfile/cloudbuild.yaml diff for DevOps concerns:
+        containers running as root, missing resource limits, hardcoded secrets,
+        overly broad IAM roles. Start reply with SEVERITY: NONE/LOW/MEDIUM/HIGH/CRITICAL
+
+        Diff:
+        {diff}
+        """
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        print(response.text)
+        with open("review.txt", "w") as f:
+            f.write(response.text)
+        PYEOF
+        DIFF_CONTENT="$$DIFF" python3 review.py
         grep -q "SEVERITY: CRITICAL" review.txt && exit 1 || exit 0
 
   # Step 2: build the container image
@@ -61,21 +80,35 @@ steps:
         echo "Log lines fetched: $$(wc -l < /workspace/logs.txt)"
     waitFor: ['smoke-test']
 
-  # Step 6b: summarize logs using Gemini
-  - name: node:20
+  # Step 6b: summarize logs using Gemini directly via google-genai SDK
+  - name: python:3.12-slim
     id: check-logs
     entrypoint: bash
     env:
-      - 'GOOGLE_GENAI_USE_VERTEXAI=true'
       - 'GOOGLE_CLOUD_PROJECT=iam-ci-demo-477311'
       - 'GOOGLE_CLOUD_LOCATION=us-central1'
-      - 'GEMINI_CLI_TRUST_WORKSPACE=true'
     args:
       - -c
       - |
-        npm install -g @google/gemini-cli
+        pip install --quiet google-genai
         if [ ! -s /workspace/logs.txt ]; then echo "No warnings or errors."; exit 0; fi
-        cat /workspace/logs.txt | gemini --model gemini-2.5-flash -p "Summarize anomaly patterns in these Cloud Run logs in 3 short bullets."
+        cat > summarize.py << 'PYEOF'
+        import os
+        from google import genai
+
+        with open("/workspace/logs.txt") as f:
+            logs = f.read()
+
+        client = genai.Client(
+            vertexai=True,
+            project=os.environ["GOOGLE_CLOUD_PROJECT"],
+            location=os.environ["GOOGLE_CLOUD_LOCATION"],
+        )
+        prompt = f"Summarize anomaly patterns in these Cloud Run logs in 3 short bullets.\n\nLogs:\n{logs}"
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        print(response.text)
+        PYEOF
+        python3 summarize.py
     waitFor: ['fetch-logs']
 
 images:
